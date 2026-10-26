@@ -1,0 +1,13 @@
+name: harness trigger
+# Runs no code and holds no secret. Its completion starts harness.yml, which runs from the default branch.
+permissions: {}
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+jobs:
+  trigger:
+    # Of the label events, only ai-agent can change whether the harness governs the pull request.
+    if: (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'ai-agent'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "harness judges this pull request in the harness workflow"

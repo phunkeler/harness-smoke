@@ -1,0 +1,147 @@
+name: harness
+# The trusted robot (reference section 6.3). workflow_run runs this file from the default branch, never from the
+# pull request. prepare and publish hold the App key and never run the change's code; check runs it with no secret.
+# Release 1 judges same-repository branches only: workflow_run.pull_requests is empty for a fork's pull request.
+permissions: {}
+on:
+  workflow_run:
+    workflows: [harness trigger]
+    types: [completed]
+concurrency:
+  # Only a successful stub run joins the pull request's group. A run that starts nothing (a label the stub filters,
+  # a failed or cancelled stub) would otherwise cancel the pending run for a newer head, which then is never judged.
+  group: harness-${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.pull_requests[0].number || github.run_id }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    # A stub run whose job was skipped (a label other than ai-agent) does not conclude success, so it starts nothing.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.pull_requests[0].number
+    runs-on: ubuntu-latest
+    environment: harness-robot
+    permissions: { contents: read, pull-requests: read, checks: read }
+    outputs:
+      view: ${{ steps.status.outputs.view }}
+      pkg-id: ${{ steps.pkg.outputs.artifact-id }}
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: install-token
+        with:
+          client-id: "${{ vars.HARNESS_APP_CLIENT_ID }}"
+          private-key: "${{ secrets.HARNESS_APP_PRIVATE_KEY }}"
+          repositories: "${{ vars.HARNESS_REPO }}"
+          permission-contents: read
+      - name: Clone harness
+        env:
+          GH_TOKEN: "${{ steps.install-token.outputs.token }}"
+          HARNESS_REF: "${{ vars.HARNESS_REF }}"
+          HARNESS_REPO: "${{ vars.HARNESS_REPO }}"
+        run: gh repo clone "$GITHUB_REPOSITORY_OWNER/$HARNESS_REPO" "$RUNNER_TEMP/maui-harness" -- --depth 1 --branch "$HARNESS_REF"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with: { global-json-file: "${{ runner.temp }}/maui-harness/global.json" }
+      - name: Pack and install harness
+        run: |
+          dotnet pack "$RUNNER_TEMP/maui-harness/src/Harness.Cli" -c Release -o "$RUNNER_TEMP/harness-pkg"
+          printf '%s' '<configuration><packageSources><clear/><add key="local" value="'"$RUNNER_TEMP"'/harness-pkg"/></packageSources></configuration>' > "$RUNNER_TEMP/harness-nuget.config"
+          dotnet tool install -g Phunkeler.MauiHarness --configfile "$RUNNER_TEMP/harness-nuget.config"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: pkg
+        with: { name: harness-pkg, path: "${{ runner.temp }}/harness-pkg" }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - id: status
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          PR: "${{ github.event.workflow_run.pull_requests[0].number }}"
+        run: |
+          view=$("$HOME/.dotnet/tools/harness" status "#$PR" --json)
+          echo "view=$view" >> "$GITHUB_OUTPUT"
+  check:
+    needs: prepare
+    # robotTest is true only when publish would act, so change code never runs for a refused or repeated verdict.
+    if: fromJSON(needs.prepare.outputs.view).governed && fromJSON(needs.prepare.outputs.view).robotTest
+    runs-on: ${{ fromJSON(needs.prepare.outputs.view).runner }}
+    timeout-minutes: 120
+    permissions: { contents: read }
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { artifact-ids: "${{ needs.prepare.outputs.pkg-id }}", path: "${{ runner.temp }}/harness-pkg" }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ github.event.workflow_run.head_sha }}", path: content, fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with: { dotnet-version: "10.0.x" }
+      - name: Install harness
+        run: |
+          printf '%s' '<configuration><packageSources><clear/><add key="local" value="'"$RUNNER_TEMP"'/harness-pkg"/></packageSources></configuration>' > "$RUNNER_TEMP/harness-nuget.config"
+          dotnet tool install -g Phunkeler.MauiHarness --configfile "$RUNNER_TEMP/harness-nuget.config"
+      - name: Run checks
+        working-directory: content
+        env:
+          PR: "${{ github.event.workflow_run.pull_requests[0].number }}"
+          BASE: "${{ fromJSON(needs.prepare.outputs.view).baseRef }}"
+        run: |
+          "$HOME/.dotnet/tools/harness" test "#$PR" --base "origin/$BASE" --results "$RUNNER_TEMP/harness-results"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with: { name: harness-results, path: "${{ runner.temp }}/harness-results", if-no-files-found: ignore }
+  publish:
+    needs: [prepare, check]
+    if: >-
+      !cancelled() && needs.prepare.result == 'success' &&
+      (!fromJSON(needs.prepare.outputs.view).governed || needs.check.result != 'skipped')
+    runs-on: ubuntu-latest
+    environment: harness-robot
+    permissions: { contents: read, id-token: write, attestations: write }
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: robot-token
+        with:
+          client-id: "${{ vars.HARNESS_APP_CLIENT_ID }}"
+          private-key: "${{ secrets.HARNESS_APP_PRIVATE_KEY }}"
+          repositories: "${{ github.event.repository.name }}"
+          permission-checks: write
+          permission-pull-requests: read
+          permission-contents: read
+      # By id, not name: the check job runs the change's code and could upload another harness-pkg. A new upload
+      # gets a new id, so this download fails instead of installing it.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { artifact-ids: "${{ needs.prepare.outputs.pkg-id }}", path: "${{ runner.temp }}/harness-pkg" }
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with: { dotnet-version: "10.0.x" }
+      - name: Install harness
+        run: |
+          printf '%s' '<configuration><packageSources><clear/><add key="local" value="'"$RUNNER_TEMP"'/harness-pkg"/></packageSources></configuration>' > "$RUNNER_TEMP/harness-nuget.config"
+          dotnet tool install -g Phunkeler.MauiHarness --configfile "$RUNNER_TEMP/harness-nuget.config"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: Fetch the judged commit without running it
+        # The token reaches this one git command only, so nothing in the workspace keeps it.
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          HEAD_SHA: "${{ github.event.workflow_run.head_sha }}"
+          PR: "${{ github.event.workflow_run.pull_requests[0].number }}"
+        run: git -c credential.helper='!gh auth git-credential' fetch --no-tags origin "$HEAD_SHA" "refs/pull/$PR/head"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with: { name: harness-results, path: harness-results }
+      - name: Publish
+        env:
+          GH_TOKEN: "${{ steps.robot-token.outputs.token }}"
+          HEAD_SHA: "${{ github.event.workflow_run.head_sha }}"
+          PR: "${{ github.event.workflow_run.pull_requests[0].number }}"
+        # The check job can upload these two files. Only harness writes the ones that get attested. When the head
+        # moved past HEAD_SHA, harness posts and writes nothing: the run for the new head judges it.
+        run: |
+          rm -rf harness-results/statement.json harness-results/predicate.json
+          "$HOME/.dotnet/tools/harness" test "#$PR" --publish harness-results --head "$HEAD_SHA"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && hashFiles('harness-results/statement.json') != '' }}
+        # overwrite: the check job could upload an artifact by this name first.
+        with: { name: harness-evidence, path: harness-results, overwrite: true }
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: ${{ !cancelled() && hashFiles('harness-results/statement.json') != '' }}
+        with:
+          subject-path: harness-results/statement.json
+          predicate-type: https://github.com/phunkeler/maui-harness/check-run/v1
+          predicate-path: harness-results/predicate.json

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "robot": { "githubAppId": 5404651 },
+  "agents": ["Copilot"],
+  "protectedPaths": ["harness.json", "checks/**", ".github/**", "tests/**"],
+  "allowNew": ["tests/**/*Tests.cs"],
+  "selection": [ { "workflow": "characterization-tests" } ],
+  "workflows": {
+    "characterization-tests": {
+      "maxAttempts": 3,
+      "protectedPaths": ["src/**"],
+      "checks": [
+        { "name": "build", "run": "checks/build.sh" },
+        { "name": "unit-tests", "run": "checks/test.sh" }
+      ],
+      "records": { "intent": ["github"], "plan": ["github"], "proposal": ["github"], "evidence": ["github"], "decision": "github" }
+    }
+  }
+}
