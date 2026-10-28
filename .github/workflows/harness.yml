@@ -54,6 +54,8 @@ jobs:
         env:
           GH_TOKEN: "${{ github.token }}"
           PR: "${{ github.event.workflow_run.pull_requests[0].number }}"
+          # A re-run of the trigger run, like a re-run of this run (GITHUB_RUN_ATTEMPT), judges a judged head again.
+          HARNESS_TRIGGER_RUN_ATTEMPT: "${{ github.event.workflow_run.run_attempt }}"
         run: |
           view=$("$HOME/.dotnet/tools/harness" status "#$PR" --json)
           echo "view=$view" >> "$GITHUB_OUTPUT"
@@ -131,6 +133,7 @@ jobs:
           GH_TOKEN: "${{ steps.robot-token.outputs.token }}"
           HEAD_SHA: "${{ github.event.workflow_run.head_sha }}"
           PR: "${{ github.event.workflow_run.pull_requests[0].number }}"
+          HARNESS_TRIGGER_RUN_ATTEMPT: "${{ github.event.workflow_run.run_attempt }}"
         # The check job can upload these two files. Only harness writes the ones that get attested. When the head
         # moved past HEAD_SHA, harness posts and writes nothing: the run for the new head judges it.
         run: |
