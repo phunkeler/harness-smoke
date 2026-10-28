@@ -1,6 +1,7 @@
 {
   "version": 1,
   "robot": { "githubAppId": 5404651 },
+  "processOwner": "@phunkeler",
   "agents": ["Copilot"],
   "protectedPaths": ["harness.json", "checks/**", ".github/**", "tests/**"],
   "allowNew": ["tests/**/*Tests.cs"],

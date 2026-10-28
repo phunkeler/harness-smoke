@@ -59,7 +59,7 @@ jobs:
           echo "view=$view" >> "$GITHUB_OUTPUT"
   check:
     needs: prepare
-    # robotTest is true only when publish would act, so change code never runs for a refused or repeated verdict.
+    # robotTest is true only when publish would act, so change code never runs when publish would refuse.
     if: fromJSON(needs.prepare.outputs.view).governed && fromJSON(needs.prepare.outputs.view).robotTest
     runs-on: ${{ fromJSON(needs.prepare.outputs.view).runner }}
     timeout-minutes: 120
@@ -101,7 +101,8 @@ jobs:
           private-key: "${{ secrets.HARNESS_APP_PRIVATE_KEY }}"
           repositories: "${{ github.event.repository.name }}"
           permission-checks: write
-          permission-pull-requests: read
+          # write: the comment that mentions harness.json's processOwner on a failing verdict.
+          permission-pull-requests: write
           permission-contents: read
       # By id, not name: the check job runs the change's code and could upload another harness-pkg. A new upload
       # gets a new id, so this download fails instead of installing it.
