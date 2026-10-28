@@ -1,4 +1,4 @@
-name: harness
+name: harness EDITED
 # The trusted robot (reference section 6.3). workflow_run runs this file from the default branch, never from the
 # pull request. prepare and publish hold the App key and never run the change's code; check runs it with no secret.
 # Release 1 judges same-repository branches only: workflow_run.pull_requests is empty for a fork's pull request.
